@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+from typing import Optional
 
 from langchain_core.messages import AIMessage
 
@@ -15,9 +16,11 @@ from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+from tradingagents.personas.loader import Persona
+from tradingagents.personas.prompt_overlay import apply_fragment
 
 
-def create_trader(llm):
+def create_trader(llm, persona: Optional[Persona] = None):
     structured_llm = bind_structured(llm, TraderProposal, "Trader")
 
     def trader_node(state, name):
@@ -26,15 +29,17 @@ def create_trader(llm):
         instrument_context = build_instrument_context(company_name, asset_type)
         investment_plan = state["investment_plan"]
 
+        system_content = (
+            "You are a trading agent analyzing market data to make investment decisions. "
+            "Based on your analysis, provide a specific recommendation to buy, sell, or hold. "
+            "Anchor your reasoning in the analysts' reports and the research plan."
+            + get_language_instruction()
+        )
+        system_content = apply_fragment(system_content, persona)
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "You are a trading agent analyzing market data to make investment decisions. "
-                    "Based on your analysis, provide a specific recommendation to buy, sell, or hold. "
-                    "Anchor your reasoning in the analysts' reports and the research plan."
-                    + get_language_instruction()
-                ),
+                "content": system_content,
             },
             {
                 "role": "user",

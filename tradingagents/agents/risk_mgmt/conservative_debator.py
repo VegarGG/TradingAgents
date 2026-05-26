@@ -1,7 +1,11 @@
+from typing import Optional
+
 from tradingagents.agents.utils.agent_utils import get_language_instruction
+from tradingagents.personas.loader import Persona
+from tradingagents.personas.prompt_overlay import apply_fragment
 
 
-def create_conservative_debator(llm):
+def create_conservative_debator(llm, persona: Optional[Persona] = None):
     def conservative_node(state) -> dict:
         risk_debate_state = state["risk_debate_state"]
         history = risk_debate_state.get("history", "")
@@ -31,6 +35,7 @@ Here is the current conversation history: {history} Here is the last response fr
 
 Engage by questioning their optimism and emphasizing the potential downsides they may have overlooked. Address each of their counterpoints to showcase why a conservative stance is ultimately the safest path for the firm's assets. Focus on debating and critiquing their arguments to demonstrate the strength of a low-risk strategy over their approaches. Output conversationally as if you are speaking without any special formatting.""" + get_language_instruction()
 
+        prompt = apply_fragment(prompt, persona)
         response = llm.invoke(prompt)
 
         argument = f"Conservative Analyst: {response.content}"

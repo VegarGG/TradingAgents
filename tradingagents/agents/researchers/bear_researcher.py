@@ -1,7 +1,11 @@
+from typing import Optional
+
 from tradingagents.agents.utils.agent_utils import get_language_instruction
+from tradingagents.personas.loader import Persona
+from tradingagents.personas.prompt_overlay import apply_fragment
 
 
-def create_bear_researcher(llm):
+def create_bear_researcher(llm, persona: Optional[Persona] = None):
     def bear_node(state) -> dict:
         investment_debate_state = state["investment_debate_state"]
         history = investment_debate_state.get("history", "")
@@ -43,6 +47,7 @@ Last bull argument: {current_response}
 Use this information to deliver a compelling bear argument, refute the bull's claims, and engage in a dynamic debate that demonstrates the risks and weaknesses of investing in the {target_label}.
 """ + get_language_instruction()
 
+        prompt = apply_fragment(prompt, persona)
         response = llm.invoke(prompt)
 
         argument = f"Bear Analyst: {response.content}"

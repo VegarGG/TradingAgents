@@ -20,6 +20,7 @@ See: https://github.com/TauricResearch/TradingAgents/issues/557
 """
 
 from datetime import datetime, timedelta
+from typing import Optional
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tradingagents.agents.utils.agent_utils import (
@@ -29,13 +30,15 @@ from tradingagents.agents.utils.agent_utils import (
 )
 from tradingagents.dataflows.reddit import fetch_reddit_posts
 from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
+from tradingagents.personas.loader import Persona
+from tradingagents.personas.prompt_overlay import apply_fragment
 
 
 def _seven_days_back(trade_date: str) -> str:
     return (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
 
 
-def create_sentiment_analyst(llm):
+def create_sentiment_analyst(llm, persona: Optional[Persona] = None):
     """Create a sentiment analyst node for the trading graph.
 
     Pre-fetches news + StockTwits + Reddit data, injects them into the
@@ -64,6 +67,7 @@ def create_sentiment_analyst(llm):
             stocktwits_block=stocktwits_block,
             reddit_block=reddit_block,
         )
+        system_message = apply_fragment(system_message, persona)
 
         prompt = ChatPromptTemplate.from_messages(
             [
@@ -165,7 +169,7 @@ Produce a sentiment report covering, in order:
 # ---------------------------------------------------------------------------
 # Backwards-compatibility shim
 # ---------------------------------------------------------------------------
-def create_social_media_analyst(llm):
+def create_social_media_analyst(llm, persona: Optional[Persona] = None):
     """Deprecated alias for :func:`create_sentiment_analyst`.
 
     Kept so existing code that imports ``create_social_media_analyst``
@@ -181,4 +185,4 @@ def create_social_media_analyst(llm):
         DeprecationWarning,
         stacklevel=2,
     )
-    return create_sentiment_analyst(llm)
+    return create_sentiment_analyst(llm, persona=persona)
