@@ -17,7 +17,11 @@ from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Protocol, Tuple
 
 from tradingagents.backtest.prices import Resolution
-from tradingagents.backtest.simulator import position_from_decision
+from tradingagents.backtest.simulator import (
+    compute_returns, max_drawdown, position_from_decision,
+    sharpe_ratio, total_return, win_rate,
+)
+from tradingagents.backtest.reflection import write_outcome_log_on_close
 
 
 class GraphRunner(Protocol):
@@ -189,9 +193,115 @@ class BacktestHarness:
         )
         self.conn.commit()
 
-    # Maturation lives in Task 15.
     def _mature_all_open(self, *, backtest_id: int, end_date: date) -> None:
-        raise NotImplementedError("Maturation lands in Task 15.")
+        """Walk every open backtest_runs row for this backtest and close it."""
+        rows = list(self.conn.execute(
+            "SELECT btr_id, persona_id, ticker, metrics "
+            "FROM backtest_runs WHERE backtest_id = ?",
+            (backtest_id,),
+        ))
+        for row in rows:
+            metrics = json.loads(row["metrics"])
+            if metrics.get("status") != "open":
+                continue
+            self._mature_one(
+                btr_id=row["btr_id"],
+                persona_id=row["persona_id"],
+                ticker=row["ticker"],
+                metrics=metrics,
+                end_date=end_date,
+            )
+
+    def _mature_one(
+        self,
+        *,
+        btr_id: int,
+        persona_id: str,
+        ticker: str,
+        metrics: dict,
+        end_date: date,
+    ) -> None:
+        entry_date = date.fromisoformat(metrics["entry_date"])
+        entry_price = metrics["entry_price"]
+        position = metrics["position"]
+        resolution = Resolution(metrics["resolution"])
+
+        # Fetch the full window. Failures mark the row errored.
+        try:
+            bars = self.price_chain.get_bars(
+                ticker, entry_date, end_date, resolution,
+            )
+        except Exception as e:
+            metrics["status"] = "errored"
+            metrics["error"] = f"price fetch failed during maturation: {e!r}"
+            self._update_metrics(btr_id, metrics)
+            return
+
+        if not bars.bars:
+            metrics["status"] = "errored"
+            metrics["error"] = "empty bars for maturation window"
+            self._update_metrics(btr_id, metrics)
+            return
+
+        exit_price = bars.bars[-1][1]
+        returns = compute_returns(bars, position=position)
+
+        # Benchmark — best-effort; if it fails, alpha defaults to total_return.
+        try:
+            bench_bars = self.price_chain.get_bars(
+                self.benchmark, entry_date, end_date, resolution,
+            )
+            bench_entry = bench_bars.bars[0][1] if bench_bars.bars else None
+            bench_exit = bench_bars.bars[-1][1] if bench_bars.bars else None
+            if bench_entry and bench_entry > 0:
+                bench_return = (bench_exit - bench_entry) / bench_entry
+            else:
+                bench_return = 0.0
+        except Exception:
+            bench_entry, bench_exit, bench_return = None, None, 0.0
+
+        tr = total_return(entry=entry_price, exit=exit_price, position=position)
+        metrics.update({
+            "status": "closed",
+            "close_date": end_date.isoformat(),
+            "exit_price": exit_price,
+            "benchmark_exit_price": bench_exit,
+            "total_return": tr,
+            "benchmark_return": bench_return,
+            "alpha": tr - bench_return,
+            "returns": returns,
+            "sharpe": sharpe_ratio(returns, resolution=resolution),
+            "max_drawdown": max_drawdown(returns),
+            "win_rate": win_rate(returns),
+            "holding_days_elapsed": (end_date - entry_date).days,
+        })
+        self._update_metrics(btr_id, metrics)
+
+        write_outcome_log_on_close(
+            self.conn,
+            run_id=metrics["run_id"],
+            ticker=ticker,
+            persona_id=persona_id,
+            decision=metrics["decision"],
+            alpha=metrics["alpha"],
+            total_return=metrics["total_return"],
+            backtest_id=self._backtest_id_for(btr_id),
+            close_date=metrics["close_date"],
+            benchmark=self.benchmark,
+        )
+
+    def _update_metrics(self, btr_id: int, metrics: dict) -> None:
+        self.conn.execute(
+            "UPDATE backtest_runs SET metrics = ? WHERE btr_id = ?",
+            (json.dumps(metrics), btr_id),
+        )
+        self.conn.commit()
+
+    def _backtest_id_for(self, btr_id: int) -> int:
+        row = self.conn.execute(
+            "SELECT backtest_id FROM backtest_runs WHERE btr_id = ?", (btr_id,),
+        ).fetchone()
+        return row["backtest_id"]
 
     def _close_backtest(self, backtest_id: int) -> None:
         self.conn.execute(
