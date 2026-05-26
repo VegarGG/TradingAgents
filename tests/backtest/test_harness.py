@@ -334,3 +334,52 @@ def test_brief_scoped_entry_date_matches_brief_generated_ts(
         m = json.loads(r["metrics"])
         assert m["entry_date"] == "2026-04-26"
         assert m["scheduled_close_date"] == "2026-05-26"
+
+
+@pytest.mark.unit
+def test_open_falls_back_to_lookback_when_start_date_has_no_bar(
+    conn, data_dir, fake_graph_runner
+):
+    """When start_date is a non-trading day (e.g. Sunday), the harness
+    must look back to find the most recent close. Otherwise yfinance
+    returning empty bars on weekends would error every forward test."""
+    from tradingagents.backtest.harness import BacktestHarness
+    from tradingagents.backtest.prices import Bars, Resolution
+
+    SUNDAY = date(2026, 4, 26)  # actual Sunday in the exit-gate window
+    FRIDAY_CLOSE = 213.45
+
+    class WeekendChain:
+        """yfinance-like: empty on a single-Sunday query, populated weekday
+        bars otherwise. The harness must use look-back to find a price."""
+        def get_bars(self, ticker, start, end, resolution):
+            if start == end == SUNDAY:
+                return Bars(ticker=ticker, resolution=resolution,
+                             bars=[], source="weekend_chain")
+            bars = []
+            d = start
+            while d <= end:
+                if d.weekday() < 5:  # Mon-Fri only
+                    price = FRIDAY_CLOSE if d == date(2026, 4, 24) else 215.0
+                    bars.append((datetime(d.year, d.month, d.day), price))
+                d += timedelta(days=1)
+            return Bars(ticker=ticker, resolution=resolution, bars=bars,
+                         source="weekend_chain")
+
+    h = BacktestHarness(
+        conn=conn, data_dir=data_dir,
+        graph_runner=fake_graph_runner, price_chain=WeekendChain(),
+    )
+    # end_date in the future so the row stays `open` (we want to inspect
+    # the entry_price specifically, not maturation).
+    backtest_id = h.run_watchlist(
+        tickers=["AAPL"], personas=["macro"],
+        start_date=SUNDAY,
+        end_date=date(2099, 1, 1),
+    )
+    runs = list(conn.execute(
+        "SELECT metrics FROM backtest_runs WHERE backtest_id=?", (backtest_id,)
+    ))
+    m = json.loads(runs[0]["metrics"])
+    assert m["status"] == "open", f"expected open, got {m}"
+    assert m["entry_price"] == pytest.approx(FRIDAY_CLOSE)

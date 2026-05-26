@@ -128,11 +128,9 @@ class BacktestHarness:
                 position = 0
 
             try:
-                bars = self.price_chain.get_bars(
-                    ticker, entry_date, entry_date, self.resolution,
+                entry_price, price_source = self._fetch_spot_price(
+                    ticker, entry_date,
                 )
-                entry_price = bars.bars[0][1] if bars.bars else None
-                price_source = bars.source
             except Exception as e:
                 self._insert_backtest_run_errored(
                     backtest_id=backtest_id, ticker=ticker,
@@ -140,20 +138,10 @@ class BacktestHarness:
                     error=f"entry price fetch failed: {e!r}",
                 )
                 continue
-            if entry_price is None:
-                self._insert_backtest_run_errored(
-                    backtest_id=backtest_id, ticker=ticker,
-                    persona_id=persona_id, run_id=run_id,
-                    error=f"no entry bar for {entry_date}",
-                )
-                continue
 
             try:
-                bench_bars = self.price_chain.get_bars(
-                    self.benchmark, entry_date, entry_date, self.resolution,
-                )
-                benchmark_entry_price = (
-                    bench_bars.bars[0][1] if bench_bars.bars else None
+                benchmark_entry_price, _ = self._fetch_spot_price(
+                    self.benchmark, entry_date,
                 )
             except Exception:
                 benchmark_entry_price = None
@@ -209,6 +197,45 @@ class BacktestHarness:
         self.conn.commit()
         return cur.lastrowid
 
+    def _fetch_spot_price(
+        self,
+        ticker: str,
+        target_date: date,
+        *,
+        lookback_days: int = 5,
+    ) -> Tuple[float, str]:
+        """Fetch the spot close price for ``ticker`` as of ``target_date``.
+
+        Tries the exact date first. If empty (non-trading day — weekend,
+        holiday), retries with a ``lookback_days``-day window and returns
+        the most recent close. Matches trading convention: a decision on a
+        Sunday uses Friday's close.
+
+        Returns ``(price, source_name)``.
+        """
+        # First try: exact-date query (preserves prior semantics for tests
+        # whose fixtures only respond to start==end).
+        try:
+            bars = self.price_chain.get_bars(
+                ticker, target_date, target_date, self.resolution,
+            )
+        except Exception:
+            bars = None
+        if bars is not None and bars.bars:
+            return bars.bars[0][1], bars.source
+
+        # Fallback: look-back window for non-trading days.
+        bars = self.price_chain.get_bars(
+            ticker, target_date - timedelta(days=lookback_days), target_date,
+            self.resolution,
+        )
+        if not bars.bars:
+            raise RuntimeError(
+                f"no bars for {ticker} in window "
+                f"{target_date - timedelta(days=lookback_days)}..{target_date}"
+            )
+        return bars.bars[-1][1], bars.source
+
     def _open_forward_test(
         self,
         *,
@@ -226,32 +253,19 @@ class BacktestHarness:
             conn=self.conn,
         )
 
-        # 2. Fetch entry price (single-bar window @ start_date).
+        # 2. Fetch entry price (allow look-back for non-trading start dates).
         try:
-            bars = self.price_chain.get_bars(
-                ticker, start_date, start_date, self.resolution,
-            )
+            entry_price, price_source = self._fetch_spot_price(ticker, start_date)
         except Exception as e:
             self._insert_backtest_run_errored(
                 backtest_id=backtest_id, ticker=ticker, persona_id=persona_id,
                 run_id=run_id, error=f"entry price fetch failed: {e!r}",
             )
             return
-        if not bars.bars:
-            self._insert_backtest_run_errored(
-                backtest_id=backtest_id, ticker=ticker, persona_id=persona_id,
-                run_id=run_id, error=f"no bars for entry {start_date}",
-            )
-            return
-        entry_price = bars.bars[0][1]
-        price_source = bars.source
 
         # 3. Fetch entry benchmark price too (best-effort).
         try:
-            bench_bars = self.price_chain.get_bars(
-                self.benchmark, start_date, start_date, self.resolution,
-            )
-            benchmark_entry_price = bench_bars.bars[0][1] if bench_bars.bars else None
+            benchmark_entry_price, _ = self._fetch_spot_price(self.benchmark, start_date)
         except Exception:
             benchmark_entry_price = None
 
