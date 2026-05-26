@@ -1286,5 +1286,9 @@ def analyze(
 from cli.deepdive import deepdive as _deepdive_cmd
 app.command(name="deepdive")(_deepdive_cmd)
 
+# IIC-FORGE F2 forward-test commands.
+from cli.forge import forge_app as _forge_app
+app.add_typer(_forge_app, name="forge")
+
 if __name__ == "__main__":
     app()

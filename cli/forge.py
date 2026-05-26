@@ -299,3 +299,59 @@ def backtest_close(
         end_date=date.fromisoformat(m["scheduled_close_date"]),
     )
     typer.echo(f"closed btr_id {btr_id}")
+
+
+# --------------------------------------------------------------------
+# `forge backtest sweep` — one-shot
+# --------------------------------------------------------------------
+
+@backtest_app.command("sweep")
+def backtest_sweep():
+    """Mature any open backtest_runs whose scheduled_close_date <= today."""
+    from tradingagents.backtest.sweep import run_maturation_pass
+
+    config = dict(DEFAULT_CONFIG)
+    conn = iic_connect(config["iic_db_path"])
+    chain = _build_price_chain(config["backtest_price_sources"])
+    result = run_maturation_pass(
+        conn, price_chain=chain, data_dir=config["iic_data_dir"],
+    )
+    typer.echo(
+        f"sweep: closed={result['closed']} "
+        f"skipped={result['skipped']} errored={result['errored']}"
+    )
+
+
+# --------------------------------------------------------------------
+# `forge backtest watch` — long-running daemon
+# --------------------------------------------------------------------
+
+@backtest_app.command("watch")
+def backtest_watch(
+    interval: Optional[int] = typer.Option(
+        None, "--interval", help="Loop interval seconds; default from config"
+    ),
+):
+    """Loop `sweep` every N seconds. Ctrl-C to exit."""
+    import time
+    from tradingagents.backtest.sweep import run_maturation_pass
+
+    config = dict(DEFAULT_CONFIG)
+    poll = interval if interval is not None else config["sweep_interval_seconds"]
+    chain = _build_price_chain(config["backtest_price_sources"])
+    typer.echo(f"watch: polling every {poll}s; Ctrl-C to exit")
+    try:
+        while True:
+            conn = iic_connect(config["iic_db_path"])
+            r = run_maturation_pass(
+                conn, price_chain=chain, data_dir=config["iic_data_dir"],
+            )
+            ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            typer.echo(
+                f"{ts}  closed={r['closed']} "
+                f"skipped={r['skipped']} errored={r['errored']}"
+            )
+            conn.close()
+            time.sleep(poll)
+    except KeyboardInterrupt:
+        typer.echo("watch: stopped")

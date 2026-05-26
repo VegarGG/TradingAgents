@@ -103,3 +103,53 @@ def test_backtest_report_writes_file(tmp_path, monkeypatch):
     assert report_path.exists()
     content = report_path.read_text(encoding="utf-8")
     assert "macro" in content
+
+
+@pytest.mark.unit
+def test_backtest_sweep_help():
+    from cli.forge import forge_app
+    runner = CliRunner()
+    result = runner.invoke(forge_app, ["backtest", "sweep", "--help"])
+    assert result.exit_code == 0
+
+
+@pytest.mark.unit
+def test_backtest_watch_help():
+    from cli.forge import forge_app
+    runner = CliRunner()
+    result = runner.invoke(forge_app, ["backtest", "watch", "--help"])
+    assert result.exit_code == 0
+    assert "--interval" in result.stdout
+
+
+@pytest.mark.unit
+def test_backtest_sweep_prints_counts(tmp_path, monkeypatch):
+    """End-to-end: empty DB → sweep prints zero counts."""
+    iic_db = tmp_path / "iic.db"
+    iic_data = tmp_path / "data"
+    monkeypatch.setenv("TRADINGAGENTS_IIC_DB_PATH", str(iic_db))
+    monkeypatch.setenv("TRADINGAGENTS_IIC_DATA_DIR", str(iic_data))
+
+    import importlib
+    import tradingagents.default_config as dc; importlib.reload(dc)
+    import cli.forge as forge_mod; importlib.reload(forge_mod)
+
+    # touch DB so schema lands
+    from tradingagents.persistence.db import connect
+    connect(str(iic_db)).close()
+
+    runner = CliRunner()
+    result = runner.invoke(forge_mod.forge_app, ["backtest", "sweep"])
+    assert result.exit_code == 0
+    assert "closed=0" in result.output
+    assert "skipped=0" in result.output
+
+
+@pytest.mark.unit
+def test_cli_main_registers_forge():
+    """cli.main must register the forge sub-app under `forge`."""
+    from cli.main import app
+    runner = CliRunner()
+    result = runner.invoke(app, ["forge", "--help"])
+    assert result.exit_code == 0
+    assert "backtest" in result.stdout
