@@ -28,8 +28,11 @@ def test_f2_exit_gate_structural_checks(tmp_path, monkeypatch):
     """
     iic_db = tmp_path / "iic.db"
     iic_data = tmp_path / "data"
+    memory_log = tmp_path / "memory" / "trading_memory.md"
+    memory_log.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("TRADINGAGENTS_IIC_DB_PATH", str(iic_db))
     monkeypatch.setenv("TRADINGAGENTS_IIC_DATA_DIR", str(iic_data))
+    monkeypatch.setenv("TRADINGAGENTS_MEMORY_LOG_PATH", str(memory_log))
 
     import importlib
     import tradingagents.default_config as dc
@@ -139,8 +142,14 @@ def test_f2_exit_gate_real_run(tmp_path, monkeypatch):
 
     iic_db = tmp_path / "iic.db"
     iic_data = tmp_path / "data"
+    memory_log = tmp_path / "memory" / "trading_memory.md"
+    memory_log.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("TRADINGAGENTS_IIC_DB_PATH", str(iic_db))
     monkeypatch.setenv("TRADINGAGENTS_IIC_DATA_DIR", str(iic_data))
+    # Isolate memory_log so we don't trigger reflection against the user's
+    # actual prior runs (pending entries would try to score via the LLM
+    # before the backtest's own decision-making starts).
+    monkeypatch.setenv("TRADINGAGENTS_MEMORY_LOG_PATH", str(memory_log))
 
     import importlib
     import tradingagents.default_config as dc; importlib.reload(dc)
