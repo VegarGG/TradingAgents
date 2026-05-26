@@ -151,6 +151,13 @@ def test_f2_exit_gate_real_run(tmp_path, monkeypatch):
     # before the backtest's own decision-making starts).
     monkeypatch.setenv("TRADINGAGENTS_MEMORY_LOG_PATH", str(memory_log))
 
+    # tests/conftest.py's `_dummy_api_keys` autouse fixture sets every API
+    # key env var to "placeholder" if not already present. For this
+    # integration test we need the REAL keys from .env, so explicitly
+    # reload .env with override=True after monkeypatch has run.
+    from dotenv import find_dotenv, load_dotenv
+    load_dotenv(find_dotenv(usecwd=True), override=True)
+
     import importlib
     import tradingagents.default_config as dc; importlib.reload(dc)
     import cli.forge as forge_mod; importlib.reload(forge_mod)
