@@ -266,3 +266,71 @@ def test_maturation_handles_missing_exit_price_as_errored(
     m = json.loads(runs[0]["metrics"])
     assert m["status"] == "errored"
     assert "exit" in m["error"].lower() or "fetch" in m["error"].lower()
+
+
+@pytest.fixture
+def seeded_brief(conn, fake_graph_runner):
+    """Insert a brief with three runs (one per persona) for AAPL."""
+    from tradingagents.persistence import store
+    run_ids = []
+    for persona_id in ("macro", "value", "momentum"):
+        rid, _ = fake_graph_runner.run(
+            ticker="AAPL", trade_date="2026-04-26",
+            persona_id=persona_id, conn=conn,
+        )
+        run_ids.append(rid)
+
+    brief_id = uuid.uuid4().hex
+    store.insert_brief(conn,
+        brief_id=brief_id, mode="deep_dive", scope="AAPL",
+        generated_ts="2026-04-26T12:00:00+00:00",
+        content_path=f"briefs/{brief_id}.md",
+        run_ids=run_ids,
+    )
+    return brief_id, run_ids
+
+
+@pytest.mark.unit
+def test_brief_scoped_opens_one_run_per_brief_run_id(
+    conn, data_dir, fake_graph_runner, historical_price_chain, seeded_brief
+):
+    brief_id, expected_run_ids = seeded_brief
+    fake_graph_runner.invocations.clear()  # ensure brief-scoped doesn't re-invoke
+
+    from tradingagents.backtest.harness import BacktestHarness
+    h = BacktestHarness(conn=conn, data_dir=data_dir,
+                         graph_runner=fake_graph_runner,
+                         price_chain=historical_price_chain)
+    backtest_id = h.run_brief_scoped(brief_id=brief_id)
+
+    # No fresh graph runs.
+    assert fake_graph_runner.invocations == []
+
+    bt_row = conn.execute("SELECT * FROM backtests WHERE backtest_id=?",
+                           (backtest_id,)).fetchone()
+    assert bt_row["triggered_by_brief_id"] == brief_id
+    assert json.loads(bt_row["universe"]) == ["AAPL"]
+
+    runs = list(conn.execute("SELECT * FROM backtest_runs WHERE backtest_id=?",
+                              (backtest_id,)))
+    assert len(runs) == 3
+    seen_run_ids = {json.loads(r["metrics"])["run_id"] for r in runs}
+    assert seen_run_ids == set(expected_run_ids)
+
+
+@pytest.mark.unit
+def test_brief_scoped_entry_date_matches_brief_generated_ts(
+    conn, data_dir, fake_graph_runner, historical_price_chain, seeded_brief
+):
+    brief_id, _ = seeded_brief
+    from tradingagents.backtest.harness import BacktestHarness
+    h = BacktestHarness(conn=conn, data_dir=data_dir,
+                         graph_runner=fake_graph_runner,
+                         price_chain=historical_price_chain)
+    backtest_id = h.run_brief_scoped(brief_id=brief_id)
+    runs = list(conn.execute("SELECT metrics FROM backtest_runs WHERE backtest_id=?",
+                              (backtest_id,)))
+    for r in runs:
+        m = json.loads(r["metrics"])
+        assert m["entry_date"] == "2026-04-26"
+        assert m["scheduled_close_date"] == "2026-05-26"

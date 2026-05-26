@@ -74,6 +74,116 @@ class BacktestHarness:
 
         return backtest_id
 
+    def run_brief_scoped(
+        self,
+        *,
+        brief_id: str,
+        window_days: int = 30,
+    ) -> int:
+        """Open forward tests for every run_id in the brief.
+
+        Reads the brief, resolves each run_id → (ticker, persona_id, decision,
+        started_ts), opens a backtest_runs row using those decisions WITHOUT
+        re-invoking the graph. Auto-matures if scheduled_close_date <= today.
+        """
+        brief_row = self.conn.execute(
+            "SELECT generated_ts, run_ids FROM briefs WHERE brief_id = ?",
+            (brief_id,),
+        ).fetchone()
+        if brief_row is None:
+            raise ValueError(f"brief_id {brief_id!r} not found")
+        generated_ts = brief_row["generated_ts"]
+        run_ids = json.loads(brief_row["run_ids"])
+
+        entry_date = date.fromisoformat(generated_ts.split("T")[0])
+        end_date = entry_date + timedelta(days=window_days)
+
+        seed_rows: List[Tuple[str, str, str, str]] = []
+        for run_id in run_ids:
+            r = self.conn.execute(
+                "SELECT ticker, persona_id, decision FROM runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if r is None:
+                raise ValueError(
+                    f"run_id {run_id!r} referenced by brief but missing"
+                )
+            seed_rows.append(
+                (run_id, r["ticker"], r["persona_id"] or "",
+                 r["decision"] or "HOLD")
+            )
+
+        universe = sorted({t for (_, t, _, _) in seed_rows})
+        backtest_id = self._insert_backtests_row(
+            triggered_by_brief_id=brief_id,
+            universe=universe,
+            start_date=entry_date,
+            end_date=end_date,
+        )
+
+        for run_id, ticker, persona_id, decision in seed_rows:
+            try:
+                position = position_from_decision(decision)
+            except ValueError:
+                position = 0
+
+            try:
+                bars = self.price_chain.get_bars(
+                    ticker, entry_date, entry_date, self.resolution,
+                )
+                entry_price = bars.bars[0][1] if bars.bars else None
+                price_source = bars.source
+            except Exception as e:
+                self._insert_backtest_run_errored(
+                    backtest_id=backtest_id, ticker=ticker,
+                    persona_id=persona_id, run_id=run_id,
+                    error=f"entry price fetch failed: {e!r}",
+                )
+                continue
+            if entry_price is None:
+                self._insert_backtest_run_errored(
+                    backtest_id=backtest_id, ticker=ticker,
+                    persona_id=persona_id, run_id=run_id,
+                    error=f"no entry bar for {entry_date}",
+                )
+                continue
+
+            try:
+                bench_bars = self.price_chain.get_bars(
+                    self.benchmark, entry_date, entry_date, self.resolution,
+                )
+                benchmark_entry_price = (
+                    bench_bars.bars[0][1] if bench_bars.bars else None
+                )
+            except Exception:
+                benchmark_entry_price = None
+
+            metrics = {
+                "status": "open",
+                "run_id": run_id,
+                "decision": decision,
+                "position": position,
+                "entry_date": entry_date.isoformat(),
+                "entry_price": entry_price,
+                "benchmark": self.benchmark,
+                "benchmark_entry_price": benchmark_entry_price,
+                "scheduled_close_date": end_date.isoformat(),
+                "resolution": str(self.resolution.value),
+                "price_source": price_source,
+            }
+            self.conn.execute(
+                "INSERT INTO backtest_runs (backtest_id, persona_id, ticker, metrics)"
+                " VALUES (?, ?, ?, ?)",
+                (backtest_id, persona_id, ticker, json.dumps(metrics)),
+            )
+            self.conn.commit()
+
+        if end_date <= date.today():
+            self._mature_all_open(backtest_id=backtest_id, end_date=end_date)
+            self._close_backtest(backtest_id)
+
+        return backtest_id
+
     # ---------- internals ----------
 
     def _insert_backtests_row(
