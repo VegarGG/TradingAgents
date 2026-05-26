@@ -25,6 +25,22 @@ from tradingagents.agents.utils.agent_states import (
     RiskDebateState,
 )
 from tradingagents.dataflows.config import set_config
+from tradingagents.personas.loader import Persona, load_persona_from_file
+
+
+def _load_persona_from_config(config: Dict[str, Any]) -> Optional[Persona]:
+    """Load the persona referenced by ``config['persona_id']`` from
+    ``tradingagents/personas/<id>.yaml``. Returns ``None`` if no persona_id
+    is set or the YAML file is missing."""
+    pid = config.get("persona_id")
+    if not pid:
+        return None
+    yaml_path = (
+        Path(__file__).resolve().parent.parent / "personas" / f"{pid}.yaml"
+    )
+    if not yaml_path.exists():
+        return None
+    return load_persona_from_file(str(yaml_path))
 
 # Import the new abstract tool methods from agent_utils
 from tradingagents.agents.utils.agent_utils import (
@@ -72,6 +88,7 @@ class TradingAgentsGraph:
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
         self.callbacks = callbacks or []
+        self.persona = _load_persona_from_config(self.config)
 
         # Update the interface's config
         set_config(self.config)
@@ -143,6 +160,7 @@ class TradingAgentsGraph:
             self.tool_nodes,
             self.conditional_logic,
             analyst_concurrency_limit=self.config.get("analyst_concurrency_limit", 1),
+            persona=self.persona,
         )
 
         self.propagator = Propagator(
