@@ -56,6 +56,12 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # IIC-FORGE F1 — cost guards (coded but disabled by default — see
     # docs/superpowers/specs/2026-05-25-iic-forge-program-design.md Appendix A).
     "cost_guard_enabled": False,
+    # IIC-FORGE F2 — backtest harness
+    "backtest_price_sources": ["yfinance", "polygon", "alpha_vantage", "futu"],
+    "backtest_resolution_default": "1d",       # "1d" | "1m"
+    "sweep_interval_seconds": 300,             # forge backtest watch default loop
+    "backtest_max_concurrent_graph_runs": 5,   # measurement only when cost_guard_enabled=False
+    "backtest_strict_historical": None,        # None=auto (on iff start_date<today); True/False=force
     # Optional cap on the number of resolved memory log entries. When set,
     # the oldest resolved entries are pruned once this limit is exceeded.
     # Pending entries are never pruned. None disables rotation entirely.
