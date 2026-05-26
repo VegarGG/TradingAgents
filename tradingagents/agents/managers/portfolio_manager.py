@@ -10,6 +10,8 @@ back gracefully to free-text generation.
 
 from __future__ import annotations
 
+from typing import Optional
+
 from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
@@ -19,16 +21,19 @@ from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+from tradingagents.personas.loader import Persona
+from tradingagents.personas.prompt_overlay import apply_fragment
+from tradingagents.personas.risk_weights import format_weighted_risk_debate
 
 
-def create_portfolio_manager(llm):
+def create_portfolio_manager(llm, persona: Optional[Persona] = None):
     structured_llm = bind_structured(llm, PortfolioDecision, "Portfolio Manager")
 
     def portfolio_manager_node(state) -> dict:
         instrument_context = build_instrument_context(state["company_of_interest"])
 
-        history = state["risk_debate_state"]["history"]
         risk_debate_state = state["risk_debate_state"]
+        weighted_debate = format_weighted_risk_debate(risk_debate_state, persona)
         research_plan = state["investment_plan"]
         trader_plan = state["trader_investment_plan"]
 
@@ -39,11 +44,7 @@ def create_portfolio_manager(llm):
             else ""
         )
 
-        prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
-
-{instrument_context}
-
----
+        base_instructions = """As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
 
 **Rating Scale** (use exactly one):
 - **Buy**: Strong conviction to enter or add to position
@@ -52,16 +53,23 @@ def create_portfolio_manager(llm):
 - **Underweight**: Reduce exposure, take partial profits
 - **Sell**: Exit position or avoid entry
 
+Be decisive and ground every conclusion in specific evidence from the analysts."""
+        base_instructions = apply_fragment(base_instructions, persona)
+
+        prompt = f"""{base_instructions}
+
+{instrument_context}
+
+---
+
 **Context:**
 - Research Manager's investment plan: **{research_plan}**
 - Trader's transaction proposal: **{trader_plan}**
 {lessons_line}
 **Risk Analysts Debate History:**
-{history}
+{weighted_debate}
 
----
-
-Be decisive and ground every conclusion in specific evidence from the analysts.{get_language_instruction()}"""
+---{get_language_instruction()}"""
 
         final_trade_decision = invoke_structured_or_freetext(
             structured_llm,
