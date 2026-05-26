@@ -65,3 +65,35 @@ class PriceSource(Protocol):
         cannot produce data for this window/resolution.
         """
         ...
+
+
+class PriceFallbackChain:
+    """Ordered chain of ``PriceSource`` implementations.
+
+    ``get_bars()`` tries each source that supports the requested resolution
+    in order; returns the first success. Sources whose ``supports`` does
+    not include the resolution are skipped (never called). Raises
+    ``PriceDataUnavailable`` if every supporting source fails or no source
+    supports the resolution.
+    """
+
+    def __init__(self, sources: List[PriceSource]):
+        self._sources = list(sources)
+
+    def get_bars(
+        self,
+        ticker: str,
+        start: date,
+        end: date,
+        resolution: Resolution = Resolution.DAILY,
+    ) -> Bars:
+        tried: List[str] = []
+        for src in self._sources:
+            if resolution not in src.supports:
+                continue
+            tried.append(src.name)
+            try:
+                return src.get_bars(ticker, start, end, resolution)
+            except Exception:  # noqa: BLE001 — any failure → try next source
+                continue
+        raise PriceDataUnavailable(ticker, start, end, tried)
