@@ -187,3 +187,115 @@ def _all_persona_ids() -> list[str]:
 class _NullGraphRunner:
     def run(self, **kw):
         raise RuntimeError("brief-scoped mode must not invoke the graph")
+
+
+# --------------------------------------------------------------------
+# `forge backtest leaderboard`
+# --------------------------------------------------------------------
+
+@backtest_app.command("leaderboard")
+def backtest_leaderboard(
+    persona: Optional[str] = typer.Option(None, "--persona"),
+    status: Optional[str] = typer.Option(
+        None, "--status", help="open | closed (default: all)"
+    ),
+    no_mtm: bool = typer.Option(
+        False, "--no-mtm", help="Skip live mark-to-market for open rows (faster)"
+    ),
+):
+    """Show open + closed forward-test rows with current performance."""
+    from tradingagents.backtest.leaderboard import build_leaderboard
+
+    config = dict(DEFAULT_CONFIG)
+    conn = iic_connect(config["iic_db_path"])
+    chain = None if no_mtm else _build_price_chain(config["backtest_price_sources"])
+
+    rows = build_leaderboard(conn, price_chain=chain, persona=persona,
+                              status_filter=status)
+    if not rows:
+        typer.echo("(no rows)")
+        return
+
+    typer.echo(
+        f"{'btr':>4}  {'persona':<10} {'ticker':<6} {'status':<8} "
+        f"{'decision':<5} {'TR':>8} {'alpha':>8}"
+    )
+    for r in rows:
+        tr = r.get("total_return") if r["status"] == "closed" else r.get("mtm_return")
+        al = r.get("alpha") if r["status"] == "closed" else r.get("mtm_alpha")
+        tr_s = f"{tr:+.4f}" if tr is not None else " - "
+        al_s = f"{al:+.4f}" if al is not None else " - "
+        typer.echo(
+            f"{r['btr_id']:>4}  {r['persona_id'] or '-':<10} {r['ticker']:<6} "
+            f"{r['status']:<8} {(r.get('decision') or '-'):<5} "
+            f"{tr_s:>8} {al_s:>8}"
+        )
+
+
+# --------------------------------------------------------------------
+# `forge backtest report`
+# --------------------------------------------------------------------
+
+@backtest_app.command("report")
+def backtest_report(
+    backtest_id: int = typer.Argument(..., help="backtest_id from `backtest start`"),
+):
+    """Render the deterministic Markdown report for a backtest."""
+    from tradingagents.backtest.report import render_report
+
+    config = dict(DEFAULT_CONFIG)
+    conn = iic_connect(config["iic_db_path"])
+    md = render_report(conn, backtest_id=backtest_id)
+
+    out_dir = Path(config["iic_data_dir"]) / "backtests" / str(backtest_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report_path = out_dir / "report.md"
+    report_path.write_text(md, encoding="utf-8")
+
+    conn.execute(
+        "UPDATE backtests SET report_path = ? WHERE backtest_id = ?",
+        (str(report_path.relative_to(config["iic_data_dir"])), backtest_id),
+    )
+    conn.commit()
+    typer.echo(f"wrote {report_path}")
+
+
+# --------------------------------------------------------------------
+# `forge backtest close` — manual single-row maturation
+# --------------------------------------------------------------------
+
+@backtest_app.command("close")
+def backtest_close(
+    btr_id: int = typer.Argument(..., help="backtest_runs.btr_id"),
+):
+    """Manually mature a single open forward test by btr_id."""
+    import json
+    from tradingagents.backtest.harness import BacktestHarness
+
+    config = dict(DEFAULT_CONFIG)
+    conn = iic_connect(config["iic_db_path"])
+    row = conn.execute(
+        "SELECT backtest_id, persona_id, ticker, metrics FROM backtest_runs WHERE btr_id = ?",
+        (btr_id,),
+    ).fetchone()
+    if not row:
+        typer.echo(f"btr_id {btr_id} not found", err=True)
+        raise typer.Exit(code=1)
+    m = json.loads(row["metrics"])
+    if m.get("status") != "open":
+        typer.echo(f"btr_id {btr_id} has status {m.get('status')!r}; nothing to close")
+        return
+
+    chain = _build_price_chain(config["backtest_price_sources"])
+    harness = BacktestHarness(
+        conn=conn, data_dir=config["iic_data_dir"],
+        graph_runner=_NullGraphRunner(), price_chain=chain,
+    )
+    harness._mature_one(
+        btr_id=btr_id,
+        persona_id=row["persona_id"],
+        ticker=row["ticker"],
+        metrics=m,
+        end_date=date.fromisoformat(m["scheduled_close_date"]),
+    )
+    typer.echo(f"closed btr_id {btr_id}")
